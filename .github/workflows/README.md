@@ -8,7 +8,7 @@ No workflow commits code, advances branches, or deploys the Vue frontend.
 
 | File / workflow | Trigger | Result | GitHub environment |
 | --- | --- | --- | --- |
-| [checks.yml](checks.yml) / Checks | Every push and pull request | Validates backend, migrations, and frontend | None |
+| [checks.yml](checks.yml) / Checks | Pushes to branches other than `deploy`, tag pushes, and all pull requests | Validates backend, migrations, and frontend | None |
 | [publish-dockerhub.yml](publish-dockerhub.yml) / Publish Docker Image | A PR merged into `master`, or manual dispatch | Validates backend and publishes Docker Hub images | `publish` |
 | [deploy.yml](deploy.yml) / Deploy | A push to `deploy`, or manual dispatch on `deploy` | Pulls an existing image and starts it on the VPS | `deploy` |
 
@@ -28,8 +28,9 @@ that the commit belongs to `master` and that its image exists before contacting 
 
 ### Triggers and jobs
 
-`push` and `pull_request` have no branch or path filters. A push to `deploy` also
-starts Checks. Pushes to a PR source branch may produce both push and PR runs.
+`push` excludes the `deploy` branch, so promoting a release to `deploy` does not
+start Checks. Other branch pushes and tag pushes still run Checks. `pull_request`
+has no branch or path filters. Pushes to a PR source branch may produce both push and PR runs.
 The `backend` and `frontend` jobs run independently; both must succeed.
 
 ### Backend
@@ -94,7 +95,7 @@ The image contains the API, nginx, certbot, and openssl. It contains no Vue fron
 The image repository is:
 
 ```text
-docker.io/<DOCKERHUB_USERNAME>/<DOCKERHUB_REPOSITORY or GitHub repository name>
+docker.io/<DOCKERHUB_USERNAME>/<DOCKERHUB_REPOSITORY or registry>
 ```
 
 Every successful build publishes:
@@ -187,7 +188,7 @@ repository settings; repository-level values are convenient for sharing them.
 | --- | --- | --- | --- |
 | `DOCKERHUB_USERNAME` | Secret | Publish, Deploy | Docker Hub account that owns the image repository |
 | `DOCKERHUB_TOKEN` | Secret | Publish, Deploy | Docker Hub access token; publishing needs write access and deployment needs read access |
-| `DOCKERHUB_REPOSITORY` | Variable, optional | Publish, Deploy | Image repository name; defaults to the GitHub repository name |
+| `DOCKERHUB_REPOSITORY` | Variable, optional | Publish, Deploy | Image repository name; defaults to `registry` |
 | `VPS_HOST` | Secret | Deploy | DNS hostname or IPv4 address, without a scheme or SSH options |
 | `VPS_USER` | Secret | Deploy | SSH account with Docker and deployment-directory access |
 | `VPS_PORT` | Secret, optional | Deploy | SSH port, 1–65535; defaults to 22 |
@@ -198,7 +199,11 @@ repository settings; repository-level values are convenient for sharing them.
 
 If credentials are stored separately in each environment, the deploy token may be
 read-only. Ensure usernames and repository variables resolve to the same image name
-in both environments. Use a lowercase Docker Hub repository name.
+in both environments. Prefer a repository-level `DOCKERHUB_REPOSITORY` variable and
+avoid conflicting environment overrides. For `docker pull av3rgun/registry:...`,
+set `DOCKERHUB_USERNAME` to `av3rgun` and `DOCKERHUB_REPOSITORY` to `registry`.
+The Docker Hub repository name is independent of the GitHub repository name.
+Use a lowercase Docker Hub repository name.
 
 Example `DEPLOY_ENV_FILE`:
 
@@ -311,7 +316,7 @@ If publishing fails, fix or rerun publishing before advancing `deploy`.
 | Deploy job skipped | Dispatch it on the `deploy` branch |
 | Missing deployment setting | Add the named secret to the deploy environment or repository |
 | Commit is not part of master | Promote an existing master commit without creating a deploy-only commit |
-| Image unavailable | Confirm image repository settings and successful publication of the full SHA tag, then rerun Deploy |
+| Image unavailable | Compare the full image path in the error with Docker Hub's pull command; correct DOCKERHUB_REPOSITORY and environment overrides, verify credentials and publication of the full SHA tag, then rerun Deploy |
 | SSH host-key verification fails | Verify the host fingerprint, hostname, and port, then correct `VPS_KNOWN_HOSTS` |
 | Docker permission or Compose errors | Verify noninteractive Docker access for `VPS_USER` and a compatible Compose plugin |
 | Health wait times out | Inspect container logs, migrations, nginx validation, and database access |
