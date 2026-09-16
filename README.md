@@ -1,18 +1,20 @@
-# Registry API
+# Registry
 
 An API for managing nginx HTTP reverse proxies and TCP/UDP stream proxies.
 The backend stores domains, routes, configuration versions, and certificate metadata
 in a database, generates nginx configurations, and applies them with validation and rollback.
 
-**Aiohttp serves only the API and `/health`.** It does not read Vue dist, serve
-`index.html`, assets, or SPA routes. Docker does not build or include Vue either.
-The previous interface sources remain in `registry/` for separate reworking and publishing.
+Aiohttp serves the API, `/health`, and the production Vue frontend on the same
+`APP_PORT`. Docker builds Vue in a separate Node.js stage and copies only its
+compiled files into the Python image. Node.js and `node_modules` are excluded
+from the final image. Without a frontend build in `frontend/`, the backend
+continues to run as an API-only service.
 
 ## Structure
 
 - `main.py`, `backend/` — aiohttp API, async SQLAlchemy, and Mako.
 - `alembic/` — SQLite/MySQL migrations.
-- `registry/` — independent Vue 3 frontend.
+- `registry/` — Vue 3 frontend sources.
 - `docker/` — nginx configuration for proxied traffic.
 - `tests/` — unit/API tests and integration checks against real nginx in Linux CI.
 - `.github/workflows/` — checks, Docker Hub publishing, and VPS deployment.
@@ -71,6 +73,7 @@ Unknown YAML settings and invalid boolean/numeric values cause an error.
 | `IMPORT_NGINX_CONFIGS` | 1; imports new simple snippets at startup |
 | `DEBUG` | 0; logs are written to stderr |
 | `AUTH_SERVER` | Auth service host; must match the `iss` claim in issued JWTs |
+| `AUTH_PROXY_TARGET` | Optional HTTP/HTTPS auth origin for login and refresh; defaults to `https://AUTH_SERVER` |
 | `NOT_SECURED_PATHS` | Public paths in YAML; `/health` is accessible without JWT |
 
 `/health` checks that the domains table is accessible.
@@ -131,7 +134,10 @@ and unsupported upstreams are skipped and logged. One failed import does not und
 
 ## Docker
 
-The image includes the Python API, nginx, certbot, and openssl. Node/Vue are absent.
+The image includes the Python API, compiled Vue frontend, nginx, certbot, and
+openssl. A separate Node.js build stage runs `npm ci` and `npm run build`; only
+`dist/` is copied to `/app/frontend` in the Python runtime stage. Vue source maps
+are disabled. Node.js, npm, and `node_modules` do not enter the final image.
 The local example runs nginx inside the container and uses its own named volumes.
 
 ```powershell
@@ -139,7 +145,7 @@ $env:CERTBOT_EMAIL = "operator@example.com"
 docker compose -f docker-compose.example.yml up -d --build
 ```
 
-Docker Compose publishes one API port, configured through `.env`:
+Docker Compose publishes one frontend and API port, configured through `.env`:
 
 ```dotenv
 APP_PORT=8090
@@ -147,7 +153,7 @@ APP_PORT=8090
 
 `APP_PORT` sets both the API listener inside the container and the published host
 port. The default is 8090 when unset or empty. For example, `APP_PORT=8485` makes
-the API available at `http://VPS_IP:8485`. Choose an available port without editing
+the interface and API available at `http://VPS_IP:8485`. Choose an available port without editing
 Compose. HTTP/HTTPS nginx listeners are not published by the supplied Compose files.
 To manage host nginx, run the API on the host with its paths and commands:
 validation and reload must target the same nginx instance that serves traffic.
@@ -170,7 +176,7 @@ Changes merged into `master` publish `latest` and `sha-<full-commit-sha>` to Doc
 Once checks and publishing succeed, advance `deploy` to that exact commit without
 creating a new merge commit. A push to `deploy` deploys the existing image to the VPS
 by digest and waits for container health. Deployment does not build images or repeat tests.
-The Vue frontend remains a separate deployment.
+The same image contains the Vue frontend; no separate frontend deployment is required.
 After successful startup, deployment removes older local images bearing this
 repository's OCI source label, preserving the current image and the previous
 version from `.env.previous`. Images referenced by other containers are retained.
@@ -178,14 +184,14 @@ version from `.env.previous`. Images referenced by other containers are retained
 For GitHub Actions, set `APP_PORT` in the
 `DEPLOY_ENV_FILE` secret. The workflow uploads that file as the VPS `.env` on each
 deployment, so changing only the VPS copy will be overwritten on the next run.
-An existing host reverse proxy can forward API requests to `127.0.0.1:APP_PORT`.
-The supplied deployment publishes only the API; exposing managed nginx traffic and
+An existing host reverse proxy can forward frontend and API requests to `127.0.0.1:APP_PORT`.
+The supplied deployment publishes the interface and API; exposing managed nginx traffic and
 providing HTTP-01 challenge routing are separate infrastructure tasks.
 
 See [the workflow guide](.github/workflows/README.md) for all triggers, GitHub secrets
 and variables, VPS setup, first deployment, version promotion, troubleshooting, and rollback.
 
-## Independent Vue frontend
+## Vue frontend
 
 ```sh
 cd registry
@@ -196,11 +202,31 @@ npm run serve
 npm run build
 ```
 
-The development server listens on port 3000 and proxies `/api` to `127.0.0.1:8090`.
+The development server listens on port 3000 and proxies `/api` to `127.0.0.1:8081`.
 `API_PROXY_TARGET` changes the development proxy target.
-`VUE_APP_API_BASE_URL` sets the API URL during a separate production build;
-the default is `/api`.
-Publish `registry/dist/` separately; the backend does not use it.
+The frontend uses same-origin `/api` and `/api/auth` URLs. Development auth
+requests default to `https://id.xho.st`; `AUTH_PROXY_TARGET` overrides that origin,
+and `AUTH_SERVER` changes the default host.
+
+In Docker, aiohttp serves files from `/app/frontend`. `/static/` holds compiled
+resources; public images and the favicon are served from the same frontend
+directory. Vue history routes such as `/auth` and `/domains/new` return
+`index.html`. Missing assets and unknown API routes remain errors. HTML and
+assets are public; domain API endpoints still require a valid access JWT.
+`index.html` uses `Cache-Control: no-cache`, and assets are cached for one hour.
+
+For a production build outside Docker, run `npm run build` and copy the contents
+of `registry/dist/` to `frontend/` at the repository root before starting Python.
+
+The backend forwards only `POST /api/auth` (with or without a trailing slash)
+and `POST /api/auth/refresh` to `/` and `/refresh` on the configured auth origin.
+These endpoints do not require an access token. JSON bodies and upstream error
+statuses are preserved; browser cookies and Authorization headers are not
+forwarded. Responses containing tokens are not cached. Redirects are rejected,
+and an unavailable auth service returns 503. The proxy has a 20-second timeout.
+`AUTH_PROXY_TARGET` must be an HTTP/HTTPS origin without credentials, a path,
+query, or fragment. It can point to an internal auth service while `AUTH_SERVER`
+continues to identify the JWT issuer. Compose passes both settings from `.env`.
 
 ## API
 

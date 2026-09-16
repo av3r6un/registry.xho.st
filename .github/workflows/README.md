@@ -2,7 +2,8 @@
 
 This repository separates validation, image publishing, and production deployment.
 All workflows run on `ubuntu-latest` and grant `GITHUB_TOKEN` only `contents: read`.
-No workflow commits code, advances branches, or deploys the Vue frontend.
+No workflow commits code or advances branches. The Vue frontend is included in
+the published image and deployed together with the backend.
 
 ## Workflow overview
 
@@ -56,7 +57,9 @@ via `DB_URL=sqlite+aiosqlite:///migration-check.db`.
 
 The job sets up Node.js 22 with npm caching based on `registry/package-lock.json`.
 It runs `npm ci`, `npm test`, and `npm run build` inside `registry/`.
-The build is a validation step; its dist files are not uploaded or deployed.
+This build is a validation step; its dist files are not uploaded. Docker builds
+the same frontend again from the published commit and includes its compiled
+files in the image deployed to the VPS.
 Checks requires no custom secrets or variables.
 
 ## Publish Docker Image
@@ -92,7 +95,12 @@ Both triggers can restore the cache. Cache export is enabled only for manual
 `workflow_dispatch` runs because `pull_request_target` has read-only cache access
 by default. Manual exports use `ignore-error=true`, so an unavailable cache service
 does not fail image publishing. Docker build and image push failures still fail the job.
-The image contains the API, nginx, certbot, and openssl. It contains no Vue frontend.
+The Dockerfile first builds Vue with Node.js 22 and then copies only `dist/` into
+`/app/frontend` in the Python runtime stage. Source maps are disabled. The final
+image contains the API, compiled Vue frontend, nginx, certbot, and openssl;
+Node.js, npm, and `node_modules` are excluded. Aiohttp serves the interface and API
+through the same `APP_PORT`, including Vue history routes. Domain API endpoints
+retain JWT authentication. Login and refresh use the backend's `/api/auth` proxy.
 
 ### Image names and version identity
 
@@ -231,15 +239,18 @@ APP_PORT=8090
 ```
 
 Set `AUTH_SERVER` to the issuer host used by your auth service. Use staging `1`
-only when intentionally requesting test certificates. Do not include `REGISTRY_IMAGE`;
+only when intentionally requesting test certificates. Login and refresh default
+to `https://AUTH_SERVER`. If the auth HTTP endpoint uses a different origin,
+add `AUTH_PROXY_TARGET=https://id.xho.st` (or an internal HTTP origin) to this
+secret. It must have no credentials, path, query, or fragment. Do not include `REGISTRY_IMAGE`;
 the workflow supplies it. This file configures Compose interpolation. The production
-Compose file explicitly passes `APP_PORT`, `AUTH_SERVER`, `CERTBOT_EMAIL`, and `CERTBOT_STAGING`
+Compose file explicitly passes `APP_PORT`, `AUTH_SERVER`, `AUTH_PROXY_TARGET`, `CERTBOT_EMAIL`, and `CERTBOT_STAGING`
 to the container; adding arbitrary keys here does not automatically pass them through.
 To expose more application settings, extend the Compose `environment` mapping.
-The deployment publishes one API port: `APP_PORT` sets both the internal API
+The deployment publishes one frontend and API port: `APP_PORT` sets both the internal API
 listener and the host port, defaulting to 8090 when unset or empty. For example,
 `APP_PORT=8485` publishes `8485:8485` and makes the API available at
-`http://VPS_IP:8485`. Select an available API port. The supplied Compose files do
+`http://VPS_IP:8485`, which also serves the frontend. Select an available port. The supplied Compose files do
 not publish nginx HTTP/HTTPS listeners.
 Update the `DEPLOY_ENV_FILE` secret for persistent changes because deployment
 replaces the VPS `.env`. Shell environment variables can override Compose `.env`
@@ -289,9 +300,9 @@ trust. For a nondefault SSH port, scan that port; known_hosts entries use
 When the server key changes, verify the replacement and update the secret.
 
 The workflow uploads the versioned production Compose file on every deployment.
-Set the API port using `APP_PORT` in `DEPLOY_ENV_FILE`, rather than editing only
+Set the frontend and API port using `APP_PORT` in `DEPLOY_ENV_FILE`, rather than editing only
 the VPS `.env`. An existing reverse proxy can forward API requests to
-`127.0.0.1:APP_PORT`. The supplied deployment exposes only the API; publishing
+`127.0.0.1:APP_PORT`. The supplied deployment exposes the interface and API; publishing
 managed nginx traffic and configuring public HTTP-01 challenge routing are separate
 infrastructure tasks.
 

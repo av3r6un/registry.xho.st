@@ -38,6 +38,7 @@ class Settings:
     'CERTBOT_WORK_DIR': '/var/lib/letsencrypt', 'CERTBOT_LOGS_DIR': '/var/log/letsencrypt',
     'OPENSSL_BIN': '/usr/bin/openssl', 'IMPORT_NGINX_CONFIGS': True,
     'AUTH_SERVER': 'id.xho.st',
+    'AUTH_PROXY_TARGET': '',
     'NOT_SECURED_PATHS': ['/health'],
   }
 

@@ -92,7 +92,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(response.status, 200)
     self.assertEqual((await self.client.delete(f'/api/domains/{domain_id}')).status, 200)
 
-  async def test_no_frontend_even_when_static_dir_is_set(self):
+  async def test_api_only_without_a_frontend_build(self):
     with patch.dict(os.environ, {'STATIC_DIR': self.directory.name}):
       for url in ('/', '/domains/new', '/assets/app.js', '/api/missing'):
         response = await self.client.get(url)

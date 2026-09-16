@@ -3,15 +3,19 @@ services:
     build: .
     image: ${REGISTRY_IMAGE:-registry-api:local}
     restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: '10m'
+        max-file: '3'
     ports:
-      - '127.0.0.1:8090:8090'
-      - '80:80'
-      - '443:443'
-      # Publish additional stream ports explicitly, e.g. "25565:25565".
+      - '${APP_PORT:-8090}:${APP_PORT:-8090}'
     environment:
       DB_URL: sqlite+aiosqlite:////app/backend/data/app.db
       APP_HOST: 0.0.0.0
-      APP_PORT: 8090
+      APP_PORT: ${APP_PORT:-8090}
+      AUTH_SERVER: ${AUTH_SERVER:-auth.xho.st}
+      AUTH_PROXY_TARGET: ${AUTH_PROXY_TARGET:-}
       CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
       CERTBOT_STAGING: ${CERTBOT_STAGING:-0}
     volumes:

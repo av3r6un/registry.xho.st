@@ -3,7 +3,7 @@
 @import './css/fonts.css';
 
 body {
-  background: url('../../public/img/bg.jpg') no-repeat 50% 50% / cover;
+  background: url('./bg.jpg') no-repeat 50% 50% / cover;
   background-attachment: fixed;
   color: $white;
   font-family: $text-font;

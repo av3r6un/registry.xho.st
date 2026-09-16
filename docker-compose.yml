@@ -16,6 +16,7 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: ${APP_PORT:-8090}
       AUTH_SERVER: ${AUTH_SERVER:-auth.xho.st}
+      AUTH_PROXY_TARGET: ${AUTH_PROXY_TARGET:-}
       CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
       CERTBOT_STAGING: ${CERTBOT_STAGING:-0}
     volumes:

@@ -3,6 +3,8 @@ const webpack = require('webpack');
 
 module.exports = defineConfig({
   transpileDependencies: true,
+  assetsDir: 'static',
+  productionSourceMap: false,
   css: {
     loaderOptions: {
       scss: {
@@ -29,12 +31,12 @@ module.exports = defineConfig({
     port: 3000,
     proxy: {
       '/api/auth': {
-        target: 'https://id.xho.st',
+        target: process.env.AUTH_PROXY_TARGET || `https://${process.env.AUTH_SERVER || 'id.xho.st'}`,
         changeOrigin: true,
         pathRewrite: { '^/api/auth': '' },
       },
       '/api/': {
-        target: 'http://127.0.0.1:8081',
+        target: process.env.API_PROXY_TARGET || 'http://127.0.0.1:8081',
         changeOrigin: true,
       },
     },

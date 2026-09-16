@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.app_keys import SESSION_FACTORY, SETTINGS
 
 from .jwt import verify_access_token
+from backend.routes.auth import is_auth_proxy_request
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ async def errors_middleware(req, handler):
 
 @web.middleware
 async def db_middleware(req, handler):
-  if req.path != '/api' and not req.path.startswith('/api/'):
+  if is_auth_proxy_request(req) or (req.path != '/api' and not req.path.startswith('/api/')):
     return await handler(req)
   async with req.app[SESSION_FACTORY]() as session:
     req['session'] = session
@@ -58,6 +59,9 @@ async def jwt_middleware(req: web.Request, handler):
   route_error = getattr(req.match_info, 'http_exception', None)
   if route_error is not None:
     raise route_error
+
+  if is_auth_proxy_request(req) or (req.path != '/api' and not req.path.startswith('/api/')):
+    return await handler(req)
   
   settings = req.app[SETTINGS]
   if any(req.path == path or req.path.startswith(path.rstrip('/') + '/')

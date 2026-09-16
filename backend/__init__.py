@@ -5,6 +5,9 @@ from .config import Settings
 from .services.domain_service import DomainService
 from .utils.engine import create_database
 from .utils.middlewares import middlewares
+from .config.config import ROOT
+from .routes.auth import auth_client_ctx
+from .routes.frontend import register_frontend
 
 
 async def db_ctx(app):
@@ -25,7 +28,7 @@ async def db_ctx(app):
       await engine.dispose()
 
 
-def create_app(settings=None, *, session_factory=None, domain_service=None):
+def create_app(settings=None, *, session_factory=None, domain_service=None, frontend_dir=None):
   from .routes import rts
   settings = settings or Settings()
   app = web.Application(middlewares=middlewares)
@@ -34,6 +37,8 @@ def create_app(settings=None, *, session_factory=None, domain_service=None):
   if session_factory is not None:
     app[SESSION_FACTORY] = session_factory
   app.add_routes(rts)
+  register_frontend(app, frontend_dir if frontend_dir is not None else ROOT / 'frontend')
+  app.cleanup_ctx.append(auth_client_ctx)
   app.cleanup_ctx.append(db_ctx)
   return app
 

@@ -1,3 +1,10 @@
+FROM node:22-alpine AS frontend
+WORKDIR /frontend
+COPY registry/package.json registry/package-lock.json ./
+RUN npm ci
+COPY registry/ ./
+RUN npm run build
+
 FROM python:3.14-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_NO_SYNC=1 APP_HOST=0.0.0.0 APP_PORT=8090
 WORKDIR /app
@@ -9,6 +16,7 @@ RUN pip install --no-cache-dir uv \
   && uv sync --frozen --no-dev --no-cache \
   && pip uninstall -y uv
 COPY backend /app/backend
+COPY --from=frontend /frontend/dist /app/frontend
 COPY alembic /app/alembic
 COPY alembic.ini main.py entrypoint.sh /app/
 COPY docker/nginx.conf /etc/nginx/nginx.conf
