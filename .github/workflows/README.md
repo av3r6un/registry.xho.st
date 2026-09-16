@@ -141,9 +141,12 @@ The job timeout is 15 minutes.
 
 ### VPS operations
 
-The workflow loads the SSH private key through ssh-agent and installs the trusted
-host-key entries from `VPS_KNOWN_HOSTS`. SSH and SCP use strict host-key checking and
-noninteractive authentication.
+The workflow loads the SSH private key through ssh-agent. If `VPS_KNOWN_HOSTS` is
+set, it installs those trusted host-key entries. Otherwise, it obtains the host keys
+from `VPS_HOST` and `VPS_PORT` using `ssh-keyscan` with a 10-second timeout. An empty
+or failed scan stops deployment. SSH and SCP use strict host-key checking and
+noninteractive authentication in both modes. Automatic scanning does not authenticate
+the server against an independently verified key; set `VPS_KNOWN_HOSTS` to pin its identity.
 
 It creates the dedicated deployment directory with owner-only access, checks Docker
 Compose availability, copies `docker-compose.yml` and `deployment.env`, and logs the
@@ -189,7 +192,7 @@ repository settings; repository-level values are convenient for sharing them.
 | `VPS_USER` | Secret | Deploy | SSH account with Docker and deployment-directory access |
 | `VPS_PORT` | Secret, optional | Deploy | SSH port, 1–65535; defaults to 22 |
 | `DEPLOY_SSH_KEY` | Secret | Deploy | Private SSH key authorized for `VPS_USER`; usable without an interactive passphrase |
-| `VPS_KNOWN_HOSTS` | Secret | Deploy | Trusted OpenSSH known_hosts entries for this host and port |
+| `VPS_KNOWN_HOSTS` | Secret, optional | Deploy | Trusted OpenSSH known_hosts entries; if omitted, the workflow discovers host keys with ssh-keyscan |
 | `DEPLOY_PATH` | Secret | Deploy | Dedicated absolute directory, for example `/opt/registry`; only letters, digits, `_`, `-`, `.`, and `/`, with no `.` or `..` path components |
 | `DEPLOY_ENV_FILE` | Secret | Deploy | Multiline Compose runtime settings; see below |
 
@@ -241,7 +244,8 @@ dedicated directory as an administrator first (replace the user and group):
 sudo install -d -m 700 -o deployer -g deployer /opt/registry
 ```
 
-Collect the host key from a trusted administrator machine:
+No known_hosts secret is required for automatic host-key scanning. To pin the VPS
+identity instead, collect the host key from a trusted administrator machine:
 
 ```sh
 ssh-keyscan -p 22 -H vps.example.com > registry-known-hosts

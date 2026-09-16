@@ -36,13 +36,12 @@ jobs:
         shell: bash
         env:
           DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
-          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
-          for name in VPS_HOST VPS_USER VPS_PORT DEPLOY_PATH DEPLOY_ENV_FILE VPS_KNOWN_HOSTS DEPLOY_SSH_KEY DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
+          for name in VPS_HOST VPS_USER VPS_PORT DEPLOY_PATH DEPLOY_ENV_FILE DEPLOY_SSH_KEY DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
             if [[ -z "${!name}" ]]; then
               echo "::error::Missing deployment setting: $name"
               exit 1
@@ -97,16 +96,29 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
-      - name: Install trusted VPS host keys
+      - name: Prepare VPS host keys
         shell: bash
         env:
           VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
+          ssh_dir="$HOME/.ssh"
+          mkdir -p "$ssh_dir"
+          chmod 700 "$ssh_dir"
+          if [[ -n "$VPS_KNOWN_HOSTS" ]]; then
+            printf '%s\n' "$VPS_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          else
+            echo 'VPS_KNOWN_HOSTS is unset; discovering the VPS host key with ssh-keyscan.'
+            if ! ssh-keyscan -T 10 -p "$VPS_PORT" -H "$VPS_HOST" > "$ssh_dir/known_hosts"; then
+              echo '::error::Could not obtain the VPS host key. Check VPS_HOST, VPS_PORT, and SSH connectivity.'
+              exit 1
+            fi
+          fi
+          if [[ ! -s "$ssh_dir/known_hosts" ]]; then
+            echo '::error::No VPS host keys were obtained.'
+            exit 1
+          fi
+          chmod 600 "$ssh_dir/known_hosts"
 
       - name: Prepare VPS deployment directory
         shell: bash
