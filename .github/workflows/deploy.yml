@@ -23,7 +23,7 @@ jobs:
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
       DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
-      DOCKER_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY || github.event.repository.name }}
+      DOCKER_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY || 'registry' }}
 
     steps:
       - name: Checkout deployment commit
@@ -75,7 +75,7 @@ jobs:
           set -euo pipefail
           image="$DOCKER_IMAGE:$IMAGE_TAG"
           if ! digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -er '.digest')"; then
-            echo '::error::The image for this commit is unavailable. Wait for Publish Docker Image to succeed, then rerun Deploy on the deploy branch.'
+            echo "::error::Could not resolve $image. Check DOCKERHUB_REPOSITORY, Docker Hub credentials, and successful publication of this SHA."
             exit 1
           fi
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
