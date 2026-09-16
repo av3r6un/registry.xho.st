@@ -1,0 +1,50 @@
+name: registry
+
+services:
+  registry:
+    image: ${REGISTRY_IMAGE:?Set REGISTRY_IMAGE to the published image digest}
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:8090:8090'
+      - '80:80'
+      - '443:443'
+      # Publish additional stream ports explicitly, e.g. "25565:25565".
+    environment:
+      DB_URL: sqlite+aiosqlite:////app/backend/data/app.db
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8090
+      AUTH_SERVER: ${AUTH_SERVER:-auth.xho.st}
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
+      CERTBOT_STAGING: ${CERTBOT_STAGING:-0}
+    volumes:
+      - registry_data:/app/backend/data
+      - registry_http_available:/etc/nginx/sites-available
+      - registry_http_enabled:/etc/nginx/sites-enabled
+      - registry_stream_available:/etc/nginx/streams-available
+      - registry_stream_enabled:/etc/nginx/streams-enabled
+      - registry_backups:/app/backend/runtime/backups
+      - registry_certificates:/etc/letsencrypt
+      - registry_acme:/var/www/certbot
+      - registry_certbot_work:/var/lib/letsencrypt
+      - registry_certbot_logs:/var/log/letsencrypt
+    networks:
+      voidspace_net:
+        aliases:
+          - mariadb
+
+volumes:
+  registry_data:
+  registry_http_available:
+  registry_http_enabled:
+  registry_stream_available:
+  registry_stream_enabled:
+  registry_backups:
+  registry_certificates:
+  registry_acme:
+  registry_certbot_work:
+  registry_certbot_logs:
+
+
+networks:
+  voidspace_net:
+    external: true

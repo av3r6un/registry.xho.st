@@ -1,0 +1,163 @@
+name: Deploy
+
+on:
+  push:
+    branches: [deploy]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/deploy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: deploy
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      DOCKER_IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.DOCKERHUB_REPOSITORY || github.event.repository.name }}
+
+    steps:
+      - name: Checkout deployment commit
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Validate deployment settings and commit
+        shell: bash
+        env:
+          DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in VPS_HOST VPS_USER VPS_PORT DEPLOY_PATH DEPLOY_ENV_FILE VPS_KNOWN_HOSTS DEPLOY_SSH_KEY DOCKERHUB_USERNAME DOCKERHUB_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing deployment setting: $name"
+              exit 1
+            fi
+          done
+          [[ "$VPS_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$VPS_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]
+          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]]
+          (( 10#$VPS_PORT >= 1 && 10#$VPS_PORT <= 65535 ))
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9_-][a-zA-Z0-9_./-]*$ ]]
+          [[ "/${DEPLOY_PATH#/}/" != *'/../'* && "/${DEPLOY_PATH#/}/" != *'/./'* ]]
+          git fetch origin master
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo '::error::The deploy commit must already be part of master. Promote it without creating a new merge commit.'
+            exit 1
+          fi
+          echo "IMAGE_TAG=sha-$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve published image digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="$DOCKER_IMAGE:$IMAGE_TAG"
+          if ! digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -er '.digest')"; then
+            echo '::error::The image for this commit is unavailable. Wait for Publish Docker Image to succeed, then rerun Deploy on the deploy branch.'
+            exit 1
+          fi
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "REGISTRY_IMAGE=$DOCKER_IMAGE@$digest" >> "$GITHUB_ENV"
+
+      - name: Prepare deployment environment
+        shell: bash
+        env:
+          DEPLOY_ENV_FILE: ${{ secrets.DEPLOY_ENV_FILE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$DEPLOY_ENV_FILE" > deployment.env
+          printf 'REGISTRY_IMAGE=%s\n' "$REGISTRY_IMAGE" >> deployment.env
+
+      - name: Load deployment SSH key
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Install trusted VPS host keys
+        shell: bash
+        env:
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Prepare VPS deployment directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "bash -s -- $(printf '%q' "$DEPLOY_PATH")" <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          mkdir -p "$1"
+          test -w "$1"
+          chmod 700 "$1"
+          command -v docker >/dev/null
+          docker compose version
+          REMOTE
+
+      - name: Upload deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes -P "$VPS_PORT" \
+            docker-compose.yml deployment.env "$VPS_USER@$VPS_HOST:$DEPLOY_PATH/"
+
+      - name: Log in to Docker Hub on VPS
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$DOCKERHUB_TOKEN" | ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "docker login --username $(printf '%q' "$DOCKERHUB_USERNAME") --password-stdin"
+
+      - name: Pull and start on VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "bash -s -- $(printf '%q' "$DEPLOY_PATH")" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          chmod 600 deployment.env
+          docker compose --env-file deployment.env config --quiet
+          docker compose --env-file deployment.env pull
+          if [[ -f .env ]]; then
+            cp -p .env .env.previous
+          fi
+          mv deployment.env .env
+          docker compose up -d --remove-orphans --wait --wait-timeout 120
+          REMOTE
+
+      - name: Remove temporary environment file
+        if: always()
+        shell: bash
+        run: rm -f deployment.env
