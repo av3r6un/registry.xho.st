@@ -88,6 +88,10 @@ real nginx integration tests are covered by Checks. It does not rerun frontend c
 
 Docker Buildx builds `./Dockerfile` with context `.` for `linux/amd64`, pushes it to
 Docker Hub, and uses the GitHub Actions build cache (`type=gha`).
+Both triggers can restore the cache. Cache export is enabled only for manual
+`workflow_dispatch` runs because `pull_request_target` has read-only cache access
+by default. Manual exports use `ignore-error=true`, so an unavailable cache service
+does not fail image publishing. Docker build and image push failures still fail the job.
 The image contains the API, nginx, certbot, and openssl. It contains no Vue frontend.
 
 ### Image names and version identity
@@ -314,6 +318,7 @@ If publishing fails, fix or rerun publishing before advancing `deploy`.
 | Symptom | Action |
 | --- | --- |
 | Deploy job skipped | Dispatch it on the `deploy` branch |
+| Publishing fails with failed to reserve cache | Update to the workflow that skips cache export for pull_request_target and makes manual cache exports optional; rerunning an older workflow retains its old cache settings |
 | Missing deployment setting | Add the named secret to the deploy environment or repository |
 | Commit is not part of master | Promote an existing master commit without creating a deploy-only commit |
 | Image unavailable | Compare the full image path in the error with Docker Hub's pull command; correct DOCKERHUB_REPOSITORY and environment overrides, verify credentials and publication of the full SHA tag, then rerun Deploy |
