@@ -1,14 +1,36 @@
 import asyncio
 import os
+import re
 import shutil
+import socket
 import subprocess
 import unittest
 from pathlib import Path
 
 from backend.models.base import Base
 from backend.services.domain_service import DomainService
+from backend.services.nginx import Nginx
 from backend.utils.engine import create_database
 from tests.support import temporary_settings
+
+
+class UnprivilegedNginx(Nginx):
+  def __init__(self):
+    super().__init__()
+    # nginx -t checks listener sockets too. Keep CI independent of root access
+    # and services already using the production HTTP/HTTPS ports.
+    with socket.socket() as http, socket.socket() as https:
+      http.bind(('127.0.0.1', 0))
+      https.bind(('127.0.0.1', 0))
+      self.ports = {80: http.getsockname()[1], 443: https.getsockname()[1]}
+
+  def render_http_config(self, **kwargs):
+    config = super().render_http_config(**kwargs)
+    return re.sub(
+      r'(?m)^(\s*listen\s+)(80|443)(?=[\s;])',
+      lambda match: f'{match[1]}127.0.0.1:{self.ports[int(match[2])]}',
+      config,
+    )
 
 
 @unittest.skipUnless(os.getenv('NGINX_INTEGRATION_BIN'), 'Real nginx integration runs in Linux CI')
@@ -40,7 +62,7 @@ stream {{
     async with self.engine.begin() as connection:
       await connection.run_sync(Base.metadata.create_all)
     self.session = self.factory()
-    self.service = DomainService(settings=self.settings)
+    self.service = DomainService(settings=self.settings, nginx=UnprivilegedNginx())
 
   async def asyncTearDown(self):
     await self.session.close()
@@ -54,7 +76,10 @@ stream {{
     result = subprocess.run([self.binary, '-p', str(self.root) + '/', '-c', str(self.config), '-T'], capture_output=True, text=True)
     self.assertEqual(result.returncode, 0, result.stderr)
     self.assertNotIn('server_name example.com', result.stdout)
-    for name, protocol, port in (('tcp-proxy', 'tcp', 25565), ('udp-proxy', 'udp', 25566)):
+    for name, protocol, kind in (('tcp-proxy', 'tcp', socket.SOCK_STREAM), ('udp-proxy', 'udp', socket.SOCK_DGRAM)):
+      with socket.socket(type=kind) as listener:
+        listener.bind(('0.0.0.0', 0))
+        port = listener.getsockname()[1]
       row = await self.service.create_domain(self.session, dict(
         type='port_proxy', name=name, stream_protocol=protocol, listen_port=port,
         upstream_host='127.0.0.1', upstream_port=port))

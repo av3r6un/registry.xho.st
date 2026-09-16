@@ -44,8 +44,11 @@ uv run alembic upgrade head && uv run alembic check
 ```
 
 Tests receive `NGINX_INTEGRATION_BIN=/usr/sbin/nginx`, enabling real nginx integration
-tests that would otherwise be skipped. Migration validation uses a disposable SQLite
-database at `migration-check.db` via `DB_URL=sqlite+aiosqlite:///migration-check.db`.
+tests that would otherwise be skipped. HTTP/HTTPS integration fixtures remap generated listeners to dynamically
+allocated loopback ports; stream fixtures also select available ephemeral ports.
+These tests do not require permission to bind production ports 80 and 443.
+Migration validation uses a disposable SQLite database at `migration-check.db`
+via `DB_URL=sqlite+aiosqlite:///migration-check.db`.
 `alembic check` detects model changes that have no matching migration.
 
 ### Frontend
