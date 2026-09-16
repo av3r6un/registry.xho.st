@@ -47,7 +47,7 @@ uv run alembic upgrade head && uv run alembic check
 Tests receive `NGINX_INTEGRATION_BIN=/usr/sbin/nginx`, enabling real nginx integration
 tests that would otherwise be skipped. HTTP/HTTPS integration fixtures remap generated listeners to dynamically
 allocated loopback ports; stream fixtures also select available ephemeral ports.
-These tests do not require permission to bind production ports 80 and 443.
+These tests do not require permission to bind the container's HTTP/HTTPS ports 80 and 443.
 Migration validation uses a disposable SQLite database at `migration-check.db`
 via `DB_URL=sqlite+aiosqlite:///migration-check.db`.
 `alembic check` detects model changes that have no matching migration.
@@ -178,6 +178,18 @@ This verifies container readiness, but does not test external DNS, TLS, auth, or
 every proxy route. The temporary environment file on the runner is removed even if
 an earlier step fails.
 
+After the health wait succeeds, a separate cleanup step removes older local images
+with `org.opencontainers.image.source` matching this GitHub repository. It keeps
+the current image and the image referenced by `.env.previous`, when present locally.
+Removal does not use force, so images referenced by other containers remain intact.
+Cleanup does not remove volumes, containers, or networks. Its failures are non-fatal,
+and it prints `docker system df` for storage visibility.
+
+The production and example Compose files use rotating local logs: three files of
+10 MB each, with the driver's default compression. nginx writes to stdout/stderr,
+so its logs share this limit. The Dockerfile avoids persisting uv's install cache
+and removes the build-only uv package in the same layer as dependency installation.
+
 There is no automatic rollback. An unsuccessful startup fails the workflow and
 requires inspection; it may already have changed the running container or database.
 
@@ -215,15 +227,23 @@ Example `DEPLOY_ENV_FILE`:
 AUTH_SERVER=auth.xho.st
 CERTBOT_EMAIL=operator@example.com
 CERTBOT_STAGING=0
+APP_PORT=8090
 ```
 
 Set `AUTH_SERVER` to the issuer host used by your auth service. Use staging `1`
 only when intentionally requesting test certificates. Do not include `REGISTRY_IMAGE`;
 the workflow supplies it. This file configures Compose interpolation. The production
-Compose file explicitly passes `AUTH_SERVER`, `CERTBOT_EMAIL`, and `CERTBOT_STAGING`
+Compose file explicitly passes `APP_PORT`, `AUTH_SERVER`, `CERTBOT_EMAIL`, and `CERTBOT_STAGING`
 to the container; adding arbitrary keys here does not automatically pass them through.
 To expose more application settings, extend the Compose `environment` mapping.
-The database path, API bind address, and API port are fixed by production Compose.
+The deployment publishes one API port: `APP_PORT` sets both the internal API
+listener and the host port, defaulting to 8090 when unset or empty. For example,
+`APP_PORT=8485` publishes `8485:8485` and makes the API available at
+`http://VPS_IP:8485`. Select an available API port. The supplied Compose files do
+not publish nginx HTTP/HTTPS listeners.
+Update the `DEPLOY_ENV_FILE` secret for persistent changes because deployment
+replaces the VPS `.env`. Shell environment variables can override Compose `.env`
+values, so remove conflicting exported port values from the VPS account's environment.
 
 Restrict the `deploy` environment's allowed deployment branch to `deploy`.
 Configure `master` branch protection to require the Checks backend and frontend jobs.
@@ -240,7 +260,8 @@ The VPS must have:
 - Outbound access to Docker Hub and inbound SSH access from GitHub-hosted runners.
 - A dedicated SSH account that can run Docker without interactive sudo and write to
   `DEPLOY_PATH`. Docker access grants substantial host privileges; use a trusted account.
-- Free TCP ports 80 and 443. Port 8090 is bound only to `127.0.0.1` for API administration.
+- One free TCP port matching `APP_PORT` (8090 by default), with network access
+  configured for your API clients or existing reverse proxy.
 
 Generate a dedicated SSH key on your administrator machine and add its public key
 to the VPS account's `~/.ssh/authorized_keys`. Store the private key in `DEPLOY_SSH_KEY`.
@@ -268,10 +289,11 @@ trust. For a nondefault SSH port, scan that port; known_hosts entries use
 When the server key changes, verify the replacement and update the secret.
 
 The workflow uploads the versioned production Compose file on every deployment.
-Make persistent port or environment changes in the repository, rather than editing
-only the VPS copy. Publish additional stream ports explicitly in Compose; UDP needs
-the `/udp` suffix. DNS for managed domains must point to the VPS, and TCP 80 must be
-externally reachable for HTTP-01 certificate issuance.
+Set the API port using `APP_PORT` in `DEPLOY_ENV_FILE`, rather than editing only
+the VPS `.env`. An existing reverse proxy can forward API requests to
+`127.0.0.1:APP_PORT`. The supplied deployment exposes only the API; publishing
+managed nginx traffic and configuring public HTTP-01 challenge routing are separate
+infrastructure tasks.
 
 Production uses the fixed Compose project name `registry`. Its volumes therefore
 have names such as `registry_registry_data` and `registry_registry_certificates`.
@@ -313,6 +335,44 @@ Do not merge a PR into `deploy` with a new merge commit: that creates a SHA that
 not published from `master`. Fast-forward promotion preserves image identity.
 If publishing fails, fix or rerun publishing before advancing `deploy`.
 
+## VPS disk usage
+
+Inspect storage on the VPS:
+
+```sh
+sudo docker system df -v
+sudo du -xh --max-depth=1 /var/lib/docker /var/lib/containerd
+```
+
+The `-x` option skips mounted filesystems, including container root filesystems
+under `/var/lib/docker/rootfs`, which would otherwise count image data again.
+containerd image storage retains both compressed and extracted image layers, so
+directory totals alone do not identify reclaimable space. Use Docker's storage
+report before choosing cleanup operations.
+
+For an immediate host-wide removal of images not referenced by any container:
+
+```sh
+sudo docker image prune -a -f
+```
+
+This can also remove locally cached rollback images and unused images of other
+projects; they must be pulled again when needed. It leaves images referenced by
+running or stopped containers and does not remove volumes. For unused build cache:
+
+```sh
+sudo docker builder prune -a -f
+sudo docker system df
+```
+
+The VPS deployment pulls prebuilt images, so its build cache may already be empty.
+Avoid deleting files directly under Docker/containerd storage or pruning production
+volumes; databases, certificates, and managed configurations live in named volumes.
+The deployment cleanup preserves two Registry versions but does not manage other
+projects' images or application data. Its source-label filter does not cover legacy
+images without the matching OCI label. Apply the updated Compose by redeploying
+to activate log rotation; build and deploy a new image to receive the smaller build.
+
 ## Troubleshooting and rollback
 
 | Symptom | Action |
@@ -325,6 +385,7 @@ If publishing fails, fix or rerun publishing before advancing `deploy`.
 | SSH host-key verification fails | Verify the host fingerprint, hostname, and port, then correct `VPS_KNOWN_HOSTS` |
 | Docker permission or Compose errors | Verify noninteractive Docker access for `VPS_USER` and a compatible Compose plugin |
 | Health wait times out | Inspect container logs, migrations, nginx validation, and database access |
+| Failed to bind host port / address already in use | Set APP_PORT to a free port in DEPLOY_ENV_FILE, and deploy a commit containing the single-port Compose file |
 
 Inspect the VPS from the deployment directory:
 
@@ -334,6 +395,8 @@ docker compose ps
 docker compose logs --tail=200 registry
 curl --fail http://127.0.0.1:8090/health
 ```
+
+Replace 8090 with your configured `APP_PORT` if changed.
 
 For an immediate image rollback, `.env.previous` stores the configuration before
 the most recent startup attempt. It is one previous version, not a backup history.

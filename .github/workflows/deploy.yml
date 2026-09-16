@@ -169,6 +169,36 @@ jobs:
           docker compose up -d --remove-orphans --wait --wait-timeout 120
           REMOTE
 
+      - name: Remove old Registry images on VPS
+        continue-on-error: true
+        shell: bash
+        env:
+          IMAGE_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+            "bash -s -- $(printf '%q' "$DEPLOY_PATH") $(printf '%q' "$IMAGE_SOURCE")" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+          current_image="$(docker compose config --images)"
+          current_id="$(docker image inspect --format '{{.Id}}' "$current_image")"
+          previous_id=''
+          if [[ -f .env.previous ]]; then
+            previous_image="$(docker compose --env-file .env.previous config --images)"
+            previous_id="$(docker image inspect --format '{{.Id}}' "$previous_image" 2>/dev/null || true)"
+          fi
+          images="$(docker image ls --quiet --no-trunc --filter "label=org.opencontainers.image.source=$2" | sort -u)"
+          for image_id in $images; do
+            if [[ "$image_id" == "$current_id" || "$image_id" == "$previous_id" ]]; then
+              continue
+            fi
+            if ! docker image rm "$image_id"; then
+              echo "::warning::Could not remove old Registry image $image_id; it may still be referenced."
+            fi
+          done
+          docker system df
+          REMOTE
+
       - name: Remove temporary environment file
         if: always()
         shell: bash

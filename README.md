@@ -139,15 +139,25 @@ $env:CERTBOT_EMAIL = "operator@example.com"
 docker compose -f docker-compose.example.yml up -d --build
 ```
 
-The API is published on localhost:8090; nginx uses ports 80 and 443.
-Publish stream ports separately, adding `/udp` for UDP.
-Do not run the example on ports already occupied by host nginx.
+Docker Compose publishes one API port, configured through `.env`:
+
+```dotenv
+APP_PORT=8090
+```
+
+`APP_PORT` sets both the API listener inside the container and the published host
+port. The default is 8090 when unset or empty. For example, `APP_PORT=8485` makes
+the API available at `http://VPS_IP:8485`. Choose an available port without editing
+Compose. HTTP/HTTPS nginx listeners are not published by the supplied Compose files.
 To manage host nginx, run the API on the host with its paths and commands:
 validation and reload must target the same nginx instance that serves traffic.
 
 Inside the container, entrypoint supervises the API and nginx: either process exiting
 stops the container, and the restart policy starts it again. Startup runs database
 migrations. The healthcheck uses `/health`.
+Docker logs rotate at 10 MB per file, keeping three files. nginx writes its logs to
+container stdout/stderr so the same rotation applies. Image builds discard uv's
+installation cache and remove the build-only uv executable from the final layer.
 The panel is intended for trusted operators; use TLS for remote access.
 
 ### CI/CD and production
@@ -161,6 +171,16 @@ Once checks and publishing succeed, advance `deploy` to that exact commit withou
 creating a new merge commit. A push to `deploy` deploys the existing image to the VPS
 by digest and waits for container health. Deployment does not build images or repeat tests.
 The Vue frontend remains a separate deployment.
+After successful startup, deployment removes older local images bearing this
+repository's OCI source label, preserving the current image and the previous
+version from `.env.previous`. Images referenced by other containers are retained.
+
+For GitHub Actions, set `APP_PORT` in the
+`DEPLOY_ENV_FILE` secret. The workflow uploads that file as the VPS `.env` on each
+deployment, so changing only the VPS copy will be overwritten on the next run.
+An existing host reverse proxy can forward API requests to `127.0.0.1:APP_PORT`.
+The supplied deployment publishes only the API; exposing managed nginx traffic and
+providing HTTP-01 challenge routing are separate infrastructure tasks.
 
 See [the workflow guide](.github/workflows/README.md) for all triggers, GitHub secrets
 and variables, VPS setup, first deployment, version promotion, troubleshooting, and rollback.
